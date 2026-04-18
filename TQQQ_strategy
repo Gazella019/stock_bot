@@ -1,0 +1,54 @@
+//@version=5
+strategy("SPY 200SMA +4% Entry -3% Exit Strategy", 
+     overlay=true, 
+     default_qty_type=strategy.percent_of_equity, 
+     default_qty_value=100)
+
+// === Inputs ===
+smaLength      = input.int(200, title="SMA Period", minval=1)
+entryThreshold = input.float(0.04, title="Entry Threshold (%)", step=0.01)
+exitThreshold  = input.float(0.03, title="Exit Threshold (%)", step=0.01)
+startYear      = input.int(1995, "Start Year")
+startMonth     = input.int(1, "Start Month")
+startDay       = input.int(1, "Start Day")
+
+// === Time filter ===
+startTime    = timestamp(startYear, startMonth, startDay, 0, 0)
+isAfterStart = time >= startTime
+
+// === Calculations ===
+sma200         = ta.sma(close, smaLength)
+upperThreshold = sma200 * (1 + entryThreshold)
+lowerThreshold = sma200 * (1 - exitThreshold)
+
+// === Strategy Logic ===
+enterLong = close > upperThreshold
+exitLong  = close < lowerThreshold
+
+if isAfterStart
+    if enterLong and strategy.position_size == 0
+        strategy.entry("Buy", strategy.long)
+    if exitLong and strategy.position_size > 0
+        strategy.close("Buy")
+
+// === Plotting ===
+p_sma   = plot(sma200, title="200 SMA", color=color.rgb(255, 0, 242))
+p_upper = plot(upperThreshold, title="Entry Threshold (+4%)", color=color.rgb(0, 200, 0))
+p_lower = plot(lowerThreshold, title="Exit Threshold (-3%)", color=color.rgb(255, 0, 0))
+
+fill(p_sma, p_upper, color=color.new(color.green, 80), title="Entry Zone")
+
+// === Entry/Exit Labels ===
+prevOpentrades = nz(strategy.opentrades[1], 0)
+newOpen  = strategy.opentrades > prevOpentrades
+newClose = strategy.opentrades < prevOpentrades
+
+// offsets for labels
+buyY  = low * 0.97
+sellY = high * 1.03
+
+if newOpen
+    label.new(x=bar_index, y=buyY, text="BUY", xloc=xloc.bar_index, yloc=yloc.price, color=color.lime, style=label.style_label_up, textcolor=color.black, size=size.large)
+
+if newClose
+    label.new(x=bar_index, y=sellY, text="SELL", xloc=xloc.bar_index, yloc=yloc.price, color=color.red, style=label.style_label_down, textcolor=color.white, size=size.large)

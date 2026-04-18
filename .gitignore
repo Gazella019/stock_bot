@@ -1,0 +1,14 @@
+# 憑證與金鑰
+.env
+*.pfx
+
+# Python
+__pycache__/
+*.pyc
+
+# Log & 資料
+*.log
+*.csv
+
+# Mac
+.DS_Store
