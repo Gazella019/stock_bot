@@ -45,8 +45,6 @@ except Exception as e:
 
 st.markdown("""
 <style>
-/* config.toml 負責整體深色主題，這裡只補不足的部分 */
-
 /* 版面間距 */
 .block-container { padding-top: 1.2rem; padding-bottom: 1rem; }
 
@@ -60,8 +58,9 @@ st.markdown("""
 /* 下載按鈕 */
 .stDownloadButton > button { width: 100% !important; }
 
-/* 隱藏右上角工具列（Deploy 等按鈕），保留側欄開關 */
-[data-testid="stToolbar"] { visibility: hidden; }
+/* 隱藏右上角 Deploy / 漢堡選單，不影響側欄開關 */
+#MainMenu { visibility: hidden; }
+footer    { visibility: hidden; }
 </style>
 """, unsafe_allow_html=True)
 
