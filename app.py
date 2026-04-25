@@ -206,7 +206,7 @@ def _style_table(df):
 
     return (df.style
               .apply(_code_style, axis=0)
-              .format(fmt, na_rep='-', escape=False)
+              .format(fmt, na_rep='-', escape=None)
               .set_table_styles([
                   {'selector': 'th', 'props': [
                       ('font-size', '12px'), ('font-weight', '600'),
@@ -582,7 +582,7 @@ if run_btn:
             col1, col2 = st.columns(2)
             col1.download_button("📥 下載結果 CSV", csv, f"trading_value_{scan_label}.csv", "text/csv")
             col2.download_button("📊 匯出 TradingView 清單", tv_txt, f"trading_value_tv_{scan_label}.txt", "text/plain")
-            st.dataframe(_style_table(df_rank), use_container_width=True, hide_index=True, height=700)
+            st.dataframe(_style_table(df_rank), width='stretch', hide_index=True, height=700)
         else:
             st.warning("查無資料，請確認是已收盤的交易日。")
 
@@ -610,7 +610,7 @@ if run_btn:
             col2.download_button("📊 匯出 TradingView 清單", tv_txt, f"tradingview_{scan_date}.txt", "text/plain")
             st.dataframe(
                 _style_table(df_strat.sort_values(by='漲幅(%)', ascending=False)),
-                use_container_width=True, hide_index=True,
+                width='stretch', hide_index=True,
             )
         else:
             st.info("今日無符合「起漲條件」的股票。")
