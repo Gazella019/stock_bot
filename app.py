@@ -3,6 +3,8 @@ import shioaji as sj
 import pandas as pd
 from datetime import datetime, timedelta, date
 import time
+import requests
+import yfinance as yf
 
 # ==========================================
 # 1. 設定與憑證區 (已填入您的資料)
@@ -26,13 +28,15 @@ except ImportError:
     HAS_TWSTOCK = False
     st.error("請安裝 twstock 套件以進行市值計算 (pip install twstock)")
 
-# 嘗試匯入 finlab (回測用)
+# 嘗試匯入 finlab (歷史回測用)
+_finlab_error = None
 try:
     import finlab
-    from finlab import data
+    from finlab import data as finlab_data
     HAS_FINLAB = True
-except ImportError:
+except Exception as e:
     HAS_FINLAB = False
+    _finlab_error = str(e)
 
 st.markdown("""
 <style>
@@ -67,266 +71,429 @@ def get_stock_capital_map():
     if not HAS_TWSTOCK: return {}
     capital_map = {}
     try:
-        # twstock.codes 包含所有上市櫃股票資訊
         for code, info in twstock.codes.items():
-            # info.capital 單位通常是元，我們需要換算
-            # 市值 = 股價 * 發行股數
-            # 發行股數 = 實收資本額 / 10 (假設面額10元)
             if info.type == "股票" and info.capital:
-                # 這裡儲存 "發行股數 (億股)"
-                # capital 是資本額(元) -> 除以10變股數 -> 除以1億變億股
                 issued_shares_b = (info.capital / 10) / 100000000
                 capital_map[code] = issued_shares_b
     except: pass
     return capital_map
 
-def generate_tv_list(df):
+def generate_tv_list(df, code_col='代碼', market_col='市場'):
     if df is None or df.empty: return ""
-    tv_lines = [f"{row.get('市場', 'TWSE')}:{row['代碼']}" for _, row in df.iterrows()]
+    tv_lines = [f"{row.get(market_col, 'TWSE')}:{row[code_col]}" for _, row in df.iterrows()]
     return ",".join(tv_lines)
 
 # ==========================================
-# 4. 功能引擎 A: 市值排行 Top 50
+# 4. 功能引擎 A: 成交值排行 Top 200
 # ==========================================
 
-def get_top_50_market_cap(api, capital_map):
+def get_top_200_trading_value_history(target_date):
+    """歷史模式：用 TWSE/TPEx 官方 API 取收盤後成交值"""
     status_text = st.empty()
     progress_bar = st.progress(0)
-
-    status_text.text("📥 [市值模式] 正在整理全市場股本資料...")
-
-    # 1. 取得所有上市櫃普通股代碼
-    targets = []
-    market_label = {}
-
-    # 只抓取有在 twstock 股本清單裡的股票 (過濾權證/ETF)
-    valid_codes = set(capital_map.keys())
-
-    for contract in api.Contracts.Stocks.TSE:
-        if contract.code in valid_codes:
-            targets.append(contract)
-            market_label[contract.code] = "TWSE"
-
-    for contract in api.Contracts.Stocks.OTC:
-        if contract.code in valid_codes:
-            targets.append(contract)
-            market_label[contract.code] = "TPEx"
-
-    if not targets:
-        st.error("無法取得股票清單。")
+    status_text.text(f"📥 從 TWSE/TPEx 取得 {target_date} 全市場資料...")
+    try:
+        tse_df  = _fetch_twse_day(target_date)
+        tpex_df = _fetch_tpex_day(target_date)
+        day_df  = pd.concat([tse_df, tpex_df], ignore_index=True)
+    except Exception as e:
+        st.error(f"API 取得失敗: {e}")
+        progress_bar.empty(); status_text.empty()
         return pd.DataFrame()
 
-    status_text.text(f"🚀 [市值模式] 掃描 {len(targets)} 檔股票最新價格...")
+    if day_df.empty:
+        st.error("查無資料，請確認選擇的是交易日（週一至週五、非假日）。")
+        progress_bar.empty(); status_text.empty()
+        return pd.DataFrame()
 
-    # 2. 分批抓取即時報價 (Snapshots)
-    results = []
-    chunk_size = 300
-    total_chunks = (len(targets) // chunk_size) + 1
+    progress_bar.progress(0.8)
+    df = day_df.sort_values(by='成交值(億)', ascending=False).head(200).copy()
+    df.reset_index(drop=True, inplace=True)
+    df.index += 1
+    df.insert(0, '排名', df.index)
 
-    for idx, i in enumerate(range(0, len(targets), chunk_size)):
-        batch = targets[i : i + chunk_size]
-        try:
-            # 延遲避免 API 過載
-            time.sleep(0.1)
-            snapshots = api.snapshots(batch)
+    industry_map = _fetch_industry_map()
+    df.insert(3, '產業別', df['代碼'].map(industry_map).fillna(''))
 
-            for snap in snapshots:
-                code = snap.code
-                close = getattr(snap, 'close', 0.0)
-
-                # 如果收盤價是 0 (可能暫停交易或錯誤)，跳過
-                if close <= 0: continue
-
-                # 計算市值
-                shares_b = capital_map.get(code, 0)
-                market_cap_b = close * shares_b # 股價 * 億股 = 市值(億)
-
-                results.append({
-                    '代碼': code,
-                    '名稱': batch[[b.code for b in batch].index(code)].name, # 取得對應名稱
-                    '市場': market_label.get(code, "TWSE"),
-                    '收盤價': close,
-                    '漲跌幅(%)': getattr(snap, 'change_rate', 0.0),
-                    '成交量': int(getattr(snap, 'total_volume', 0)),
-                    '總市值(億)': market_cap_b
-                })
-        except Exception as e:
-            continue
-
-        progress_bar.progress(min((idx + 1) / total_chunks, 0.9))
-
-    # 3. 排序並取前 50
-    status_text.text("📊 正在計算並排序...")
-    if results:
-        df = pd.DataFrame(results)
-        # 依照市值降冪排序
-        df = df.sort_values(by='總市值(億)', ascending=False).head(50)
-        # 重設排名索引
-        df.reset_index(drop=True, inplace=True)
-        df.index += 1 # 排名從 1 開始
-        df.insert(0, '排名', df.index)
-    else:
-        df = pd.DataFrame()
-
-    progress_bar.empty()
-    status_text.empty()
+    progress_bar.progress(1.0)
+    progress_bar.empty(); status_text.empty()
     return df
 
 # ==========================================
-# 5. 功能引擎 B: 策略篩選 (起漲)
+# 5. 功能引擎 B: 策略篩選 即時版 (Shioaji)
 # ==========================================
 
-def run_strategy_scanner(api, vol_mul, rise_threshold, capital_map):
-    # (此函式維持您原本的邏輯，精簡顯示以節省篇幅)
+def run_strategy_scanner(api, vol_mul, rise_threshold, capital_map, top_n_tv=0):
     status_text = st.empty()
     progress_bar = st.progress(0)
     status_text.text("📥 [策略模式] 下載全市場清單...")
 
     contracts = []
     market_map = {}
-    for c in api.Contracts.Stocks.TSE: contracts.append(c); market_map[c.code]="TWSE"
-    for c in api.Contracts.Stocks.OTC: contracts.append(c); market_map[c.code]="TPEx"
+    code_to_contract = {}
+    for c in api.Contracts.Stocks.TSE:
+        if len(c.code) == 4:
+            contracts.append(c)
+            market_map[c.code] = "TWSE"
+            code_to_contract[c.code] = c
+    for c in api.Contracts.Stocks.OTC:
+        if len(c.code) == 4:
+            contracts.append(c)
+            market_map[c.code] = "TPEx"
+            code_to_contract[c.code] = c
 
-    candidates = []
     chunk_size = 200
+    total_chunks = (len(contracts) // chunk_size) + 1
 
-    # Step 1: 快篩漲幅與量
-    status_text.text("🚀 [策略模式] 執行第一階段快篩...")
+    # Step 1: 蒐集全市場 snapshots
+    status_text.text(f"🚀 [策略模式] 第一階段快篩（{len(contracts)} 檔）...")
+    all_snaps = {}
     for idx, i in enumerate(range(0, len(contracts), chunk_size)):
-        batch = contracts[i : i+chunk_size]
+        batch = contracts[i : i + chunk_size]
         try:
-            time.sleep(0.15)
+            time.sleep(0.1)
             snaps = api.snapshots(batch)
             for s in snaps:
-                v = getattr(s, 'total_volume', 0)
-                c = getattr(s, 'change_rate', 0.0)
-                if v > 500 and c >= rise_threshold:
-                    candidates.append((s.code, s))
+                all_snaps[s.code] = s
         except: pass
-        progress_bar.progress((idx+1)/((len(contracts)//200)+1) * 0.5)
+        progress_bar.progress(min((idx + 1) / total_chunks * 0.5, 0.5))
 
-    if not candidates: return pd.DataFrame()
+    # 成交值前 N 大篩選
+    if top_n_tv > 0:
+        sorted_codes = sorted(all_snaps, key=lambda c: getattr(all_snaps[c], 'total_amount', 0), reverse=True)
+        top_codes = set(sorted_codes[:top_n_tv])
+    else:
+        top_codes = None
 
-    # Step 2: 技術指標 (30日高 + 爆量)
-    status_text.text(f"🔍 [策略模式] 深度分析 {len(candidates)} 檔候選股...")
+    candidates = []
+    for code, s in all_snaps.items():
+        if top_codes is not None and code not in top_codes:
+            continue
+        if getattr(s, 'total_volume', 0) > 500 and getattr(s, 'change_rate', 0.0) >= rise_threshold:
+            candidates.append((code, s))
+
+    if not candidates:
+        progress_bar.empty(); status_text.empty()
+        return pd.DataFrame()
+
+    # Step 2: kbars 技術確認
+    status_text.text(f"🔍 [策略模式] 第二階段分析 {len(candidates)} 檔候選股...")
     final_res = []
-    start_date = (datetime.now() - timedelta(days=100)).strftime('%Y-%m-%d')
+    start_date = (datetime.now() - timedelta(days=45)).strftime('%Y-%m-%d')
     end_date = datetime.now().strftime('%Y-%m-%d')
 
     for idx, (code, snap) in enumerate(candidates):
         try:
-            if idx % 20 == 0: time.sleep(0.05)
-            contract = api.Contracts.Stocks[code]
+            time.sleep(0.08)
+            contract = code_to_contract.get(code)
+            if contract is None: continue
+
             kbars = api.kbars(contract, start=start_date, end=end_date)
             df = pd.DataFrame({**kbars})
-            df.ts = pd.to_datetime(df.ts)
 
-            if len(df) >= 30:
-                df.Close = df.Close.astype(float); df.Volume = df.Volume.astype(float)
-                highest = df.Close.tail(30).max()
-                cur_close = df.Close.iloc[-1]
-                cur_vol = df.Volume.iloc[-1]
-                vol_ma5 = df.Volume.tail(5).mean() or 1
+            if len(df) >= 10:
+                df['Close'] = df['Close'].astype(float)
+                df['Volume'] = df['Volume'].astype(float)
+                highest = df['Close'].tail(30).max()
+                cur_close = df['Close'].iloc[-1]
+                cur_vol = df['Volume'].iloc[-1]
+                vol_ma5 = df['Volume'].tail(5).mean() or 1
 
-                if cur_close >= highest * 0.95 and cur_vol > vol_ma5 * vol_mul:
+                vol_ok = (vol_mul == 0) or (cur_vol > vol_ma5 * vol_mul)
+                if cur_close >= highest * 0.95 and vol_ok:
                     shares = capital_map.get(code, 0)
                     m_cap = cur_close * shares if shares else None
                     final_res.append({
                         '代碼': code, '名稱': contract.name, '市場': market_map.get(code, "TWSE"),
                         '漲幅(%)': snap.change_rate, '收盤價': cur_close,
-                        '成交量': int(snap.total_volume), '5日均量': int(vol_ma5),
+                        '成交量(張)': int(snap.total_volume), '5日均量(張)': int(vol_ma5),
                         '總市值(億)': round(m_cap, 1) if m_cap else None
                     })
         except: pass
-        progress_bar.progress(0.5 + (0.5 * (idx+1)/len(candidates)))
+        progress_bar.progress(0.5 + (0.5 * (idx + 1) / len(candidates)))
 
     progress_bar.empty()
     status_text.empty()
     return pd.DataFrame(final_res)
 
 # ==========================================
-# 6. 主程式 UI 邏輯
+# 6. 功能引擎 C: 歷史回測 (TWSE API + yfinance)
 # ==========================================
 
-# --- 側邊欄：功能選擇 ---
+@st.cache_data(ttl=86400)
+def _fetch_industry_map():
+    """一次抓取上市+上櫃所有股票的中文產業別"""
+    result = {}
+    for mode in ('2', '4'):  # 2=上市, 4=上櫃
+        try:
+            r = requests.get(f"https://isin.twse.com.tw/isin/C_public.jsp?strMode={mode}", timeout=15)
+            from io import StringIO
+            df = pd.read_html(StringIO(r.text))[0]
+            df.columns = df.iloc[0]
+            df = df.iloc[1:].reset_index(drop=True)
+            for _, row in df.iterrows():
+                raw = str(row.get('有價證券代號及名稱', ''))
+                parts = raw.split('\u3000')  # 全形空格分隔代號與名稱
+                if len(parts) >= 1 and len(parts[0].strip()) == 4:
+                    result[parts[0].strip()] = str(row.get('產業別', ''))
+        except Exception:
+            pass
+    return result
+
+def _fetch_twse_day(target_date):
+    """TWSE 全市場當日資料（上市）"""
+    date_str = target_date.strftime('%Y%m%d')
+    url = f"https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY_ALL?date={date_str}&response=json"
+    j = requests.get(url, timeout=15).json()
+    if j.get('stat') != 'OK' or not j.get('data'):
+        return pd.DataFrame()
+
+    rows = []
+    for r in j['data']:
+        code = r[0].strip()
+        if len(code) != 4: continue
+        try:
+            close       = float(r[7].replace(',', ''))
+            change_amt  = float(r[8].replace(',', '').strip())  # 已含正負號
+            prev_close  = close - change_amt
+            change_rate = (change_amt / prev_close * 100) if prev_close > 0 else 0
+            vol_lots    = int(r[2].replace(',', '')) / 1000  # 股 → 張
+            turnover    = float(r[3].replace(',', '')) / 1e8  # 元 → 億
+            rows.append({'代碼': code, '名稱': r[1].strip(), '市場': 'TWSE',
+                         '收盤價': close, '漲幅(%)': round(change_rate, 2),
+                         '成交量(張)': vol_lots, '成交值(億)': round(turnover, 2)})
+        except: continue
+    return pd.DataFrame(rows)
+
+def _fetch_tpex_day(target_date):
+    """TPEx 全市場當日資料（上櫃），日期轉民國曆"""
+    roc_year  = target_date.year - 1911
+    roc_date  = f"{roc_year}/{target_date.month:02d}/{target_date.day:02d}"
+    url = (f"https://www.tpex.org.tw/web/stock/aftertrading/otc_quotes_no1430/"
+           f"stk_wn1430_result.php?l=zh-tw&d={roc_date}&se=EW&s=0,asc,0")
+    j = requests.get(url, timeout=15).json()
+    raw = j.get('tables', [{}])[0].get('data') or j.get('aaData', [])
+    if not raw:
+        return pd.DataFrame()
+
+    rows = []
+    for r in raw:
+        code = r[0].strip()
+        if len(code) != 4: continue
+        try:
+            close       = float(r[2].replace(',', ''))
+            change_str  = r[3].strip().replace('+', '')
+            change_amt  = float(change_str)              # 已含負號
+            prev_close  = close - change_amt
+            change_rate = (change_amt / prev_close * 100) if prev_close > 0 else 0
+            vol_lots    = int(r[7].replace(',', '')) / 1000  # 股 → 張
+            turnover    = float(r[8].replace(',', '')) / 1e8  # 元 → 億
+            rows.append({'代碼': code, '名稱': r[1].strip(), '市場': 'TPEx',
+                         '收盤價': close, '漲幅(%)': round(change_rate, 2),
+                         '成交量(張)': vol_lots, '成交值(億)': round(turnover, 2)})
+        except: continue
+    return pd.DataFrame(rows)
+
+def run_history_scanner(target_date, vol_mul, rise_threshold, top_n_tv=0):
+    status_text = st.empty()
+    progress_bar = st.progress(0)
+
+    # ── 第一階段：TWSE + TPEx 官方 API（2 個 request 取全市場）──
+    status_text.text(f"📥 從 TWSE/TPEx 取得 {target_date} 全市場資料...")
+    try:
+        tse_df  = _fetch_twse_day(target_date)
+        tpex_df = _fetch_tpex_day(target_date)
+        day_df  = pd.concat([tse_df, tpex_df], ignore_index=True)
+    except Exception as e:
+        st.error(f"API 取得失敗: {e}")
+        progress_bar.empty(); status_text.empty()
+        return pd.DataFrame()
+
+    if day_df.empty:
+        st.error("查無資料，請確認選擇的是交易日（週一至週五、非假日）。")
+        progress_bar.empty(); status_text.empty()
+        return pd.DataFrame()
+
+    progress_bar.progress(0.25)
+
+    # 成交值前 N 大篩選
+    if top_n_tv > 0:
+        top_codes = set(day_df.sort_values('成交值(億)', ascending=False).head(top_n_tv)['代碼'])
+        universe = day_df[day_df['代碼'].isin(top_codes)]
+    else:
+        universe = day_df
+
+    cands = universe[(universe['成交量(張)'] > 500) & (universe['漲幅(%)'] >= rise_threshold)].copy()
+    status_text.text(f"🔍 第一階段篩出 {len(cands)} 檔，用 yfinance 進行技術確認...")
+    if cands.empty:
+        progress_bar.empty(); status_text.empty()
+        return pd.DataFrame()
+
+    # ── 第二階段：yfinance 拿 60 天歷史，確認 30 日高 + 5 日均量 ──
+    tickers = [f"{r['代碼']}.TW" if r['市場'] == 'TWSE' else f"{r['代碼']}.TWO"
+               for _, r in cands.iterrows()]
+    code_map = {f"{r['代碼']}.TW" if r['市場'] == 'TWSE' else f"{r['代碼']}.TWO": r['代碼']
+                for _, r in cands.iterrows()}
+
+    start_str = (target_date - timedelta(days=60)).strftime('%Y-%m-%d')
+    end_str   = (target_date + timedelta(days=1)).strftime('%Y-%m-%d')
+
+    try:
+        hist = yf.download(tickers, start=start_str, end=end_str,
+                           auto_adjust=True, progress=False, group_by='ticker')
+    except Exception as e:
+        st.error(f"yfinance 下載失敗: {e}")
+        progress_bar.empty(); status_text.empty()
+        return pd.DataFrame()
+
+    progress_bar.progress(0.75)
+
+    is_multi = isinstance(hist.columns, pd.MultiIndex)
+    target_ts = pd.Timestamp(target_date)
+    final_res = []
+
+    for ticker, code in code_map.items():
+        try:
+            s = hist[ticker] if is_multi else hist
+            s = s[s.index.normalize() <= target_ts].dropna(subset=['Close'])
+            if len(s) < 10: continue
+
+            closes  = s['Close'].astype(float)
+            volumes = s['Volume'].astype(float)
+
+            highest_30d = closes.tail(30).max()
+            cur_close   = closes.iloc[-1]
+            vol_ma5     = volumes.tail(5).mean() or 1
+            cur_vol     = volumes.iloc[-1]
+
+            vol_ok = (vol_mul == 0) or (cur_vol > vol_ma5 * vol_mul)
+            if cur_close >= highest_30d * 0.95 and vol_ok:
+                row = cands[cands['代碼'] == code].iloc[0]
+                final_res.append({
+                    '代碼':       code,
+                    '名稱':       row['名稱'],
+                    '市場':       row['市場'],
+                    '漲幅(%)':    row['漲幅(%)'],
+                    '收盤價':     cur_close,
+                    '成交量(張)': int(row['成交量(張)']),
+                    '成交值(億)': row['成交值(億)'],
+                    '5日均量(張)':int(vol_ma5 / 1000),
+                    '量比':       round(cur_vol / vol_ma5, 2),
+                    '30日高':     round(highest_30d, 2),
+                })
+        except: continue
+
+    progress_bar.progress(1.0)
+    progress_bar.empty(); status_text.empty()
+
+    result_df = pd.DataFrame(final_res)
+    if not result_df.empty:
+        industry_map = _fetch_industry_map()
+        result_df.insert(2, '產業別', result_df['代碼'].map(industry_map).fillna(''))
+    return result_df
+
+# ==========================================
+# 7. 主程式 UI 邏輯
+# ==========================================
+
 with st.sidebar:
     st.title("🎛️ 功能選單")
 
-    # 核心模式切換
     mode = st.radio(
         "請選擇執行模式：",
-        ["🚀 策略篩選 (起漲)", "🏆 市值排行 Top 50"],
-        captions=["尋找爆量突破的股票", "列出全台最大前 50 家公司"]
+        ["🚀 策略篩選 (起漲)", "💰 成交值排行 Top 200"],
+        captions=["尋找爆量突破的股票", "列出全市場成交值最大前 200 檔"]
     )
 
     st.divider()
 
-    # 根據不同模式顯示不同參數
     if mode == "🚀 策略篩選 (起漲)":
         st.header("⚙️ 篩選參數")
         rise_threshold = st.slider("漲幅門檻 (%)", 0.0, 10.0, 3.0)
-        vol_mul = st.number_input("爆量倍數 (vs 5日均量)", 1.5, step=0.1)
+        vol_mul = st.number_input("爆量倍數 (vs 5日均量，0 = 不限)", min_value=0.0, value=1.5, step=0.1)
+        top_n_tv = st.number_input("成交值前N大 (0 = 不限)", min_value=0, max_value=2000, value=0, step=50)
+
+        st.divider()
+        use_history = st.toggle("📅 查詢歷史日期", value=False)
+        if use_history:
+            target_date = st.date_input("查詢日期", value=date.today(),
+                                        max_value=date.today())
     else:
-        st.info("ℹ️ 市值排行模式無需設定參數，直接抓取當日最新數據。")
+        target_date_tv = st.date_input("查詢日期", value=date.today(),
+                                       max_value=date.today(), key="tv_date")
+        st.info("ℹ️ 使用 TWSE/TPEx 收盤資料，請選擇已收盤的交易日。")
 
     st.divider()
     run_btn = st.button("開始執行", type="primary")
 
-# --- 主畫面顯示 ---
 st.title(f"{mode}")
 
 if run_btn:
-    api = get_shioaji_api()
-    capital_map = get_stock_capital_map()
-
-    if not api:
-        st.stop()
-
-    if mode == "🏆 市值排行 Top 50":
-        # 執行市值排行
-        df_rank = get_top_50_market_cap(api, capital_map)
+    if mode == "💰 成交值排行 Top 200":
+        st.info(f"📅 {target_date_tv.strftime('%Y/%m/%d')}（TWSE + TPEx 收盤資料）")
+        df_rank = get_top_200_trading_value_history(target_date_tv)
+        scan_label = target_date_tv.strftime('%Y%m%d')
 
         if not df_rank.empty:
-            st.success(f"✅ 已列出今日市值最大的 50 檔股票")
-
-            # 顯示漂亮的表格
-            st.dataframe(
-                df_rank,
-                width=1200,
-                hide_index=True,
-                height=600,
-                column_config={
-                    "排名": st.column_config.NumberColumn("排名", format="#%d"),
-                    "代碼": st.column_config.TextColumn("代碼"),
-                    "名稱": st.column_config.TextColumn("名稱"),
-                    "總市值(億)": st.column_config.NumberColumn("總市值 (億)", format="$ %.1f 億"),
-                    "收盤價": st.column_config.NumberColumn("收盤價", format="$ %.2f"),
-                    "漲跌幅(%)": st.column_config.NumberColumn("漲跌幅", format="%.2f %%"),
-                    "成交量": st.column_config.NumberColumn("成交量 (張)", format="%d"),
-                }
-            )
+            st.success(f"✅ 已列出成交值最大的 {len(df_rank)} 檔股票")
+            csv = df_rank.to_csv(index=False).encode('utf-8-sig')
+            tv_lines = []
+            for _, r in df_rank.iterrows():
+                exchange = 'TWSE' if r.get('市場', 'TWSE') == 'TWSE' else 'TPEX'
+                tv_lines.append(f"{exchange}:{r['代碼']}")
+            tv_txt = '\n'.join(tv_lines).encode('utf-8')
+            col1, col2 = st.columns(2)
+            col1.download_button("📥 下載結果 CSV", csv, f"trading_value_{scan_label}.csv", "text/csv")
+            col2.download_button("📊 匯出 TradingView 清單", tv_txt, f"trading_value_tv_{scan_label}.txt", "text/plain")
+            col_cfg = {
+                "排名":       st.column_config.NumberColumn("排名", format="%d"),
+                "代碼":       st.column_config.TextColumn("代碼"),
+                "名稱":       st.column_config.TextColumn("名稱"),
+                "市場":       st.column_config.TextColumn("市場"),
+                "產業別":     st.column_config.TextColumn("產業別"),
+                "成交值(億)": st.column_config.NumberColumn("成交值 (億)", format="%.2f 億"),
+                "收盤價":     st.column_config.NumberColumn("收盤價", format="%.2f"),
+                "漲幅(%)":    st.column_config.NumberColumn("漲跌幅", format="%.2f %%"),
+                "成交量(張)": st.column_config.NumberColumn("成交量 (張)", format="%d"),
+            }
+            st.dataframe(df_rank, width=1200, hide_index=True, height=700, column_config=col_cfg)
         else:
-            st.warning("查無資料，可能是 API 連線問題或非交易時間無法取得報價。")
+            st.warning("查無資料，請確認是已收盤的交易日。")
 
     elif mode == "🚀 策略篩選 (起漲)":
-        # 執行策略篩選 (使用當日即時資料)
-        df_strat = run_strategy_scanner(api, vol_mul, rise_threshold, capital_map)
+        if use_history:
+            st.info(f"📅 歷史模式：{target_date.strftime('%Y/%m/%d')}（TWSE + yfinance）")
+            df_strat = run_history_scanner(target_date, vol_mul, rise_threshold, top_n_tv)
+        else:
+            api = get_shioaji_api()
+            capital_map = get_stock_capital_map()
+            if not api: st.stop()
+            df_strat = run_strategy_scanner(api, vol_mul, rise_threshold, capital_map, top_n_tv)
 
         if not df_strat.empty:
             st.success(f"🎯 篩選出 {len(df_strat)} 檔符合條件股票")
-
-            # 下載按鈕
             csv = df_strat.to_csv(index=False).encode('utf-8-sig')
-            st.download_button("📥 下載結果 CSV", csv, "strategy_result.csv", "text/csv")
-
+            tv_lines = []
+            for _, r in df_strat.iterrows():
+                exchange = 'TWSE' if r.get('市場', 'TWSE') == 'TWSE' else 'TPEX'
+                tv_lines.append(f"{exchange}:{r['代碼']}")
+            tv_txt = '\n'.join(tv_lines).encode('utf-8')
+            col1, col2 = st.columns(2)
+            scan_date = target_date.strftime('%Y%m%d') if use_history else date.today().strftime('%Y%m%d')
+            col1.download_button("📥 下載結果 CSV", csv, f"strategy_{scan_date}.csv", "text/csv")
+            col2.download_button("📊 匯出 TradingView 清單", tv_txt, f"tradingview_{scan_date}.txt", "text/plain")
             st.dataframe(
                 df_strat.sort_values(by='漲幅(%)', ascending=False),
-                width=1200,
-                hide_index=True,
+                width=1200, hide_index=True,
                 column_config={
-                    "漲幅(%)": st.column_config.NumberColumn("漲幅", format="%.2f %%"),
-                    "總市值(億)": st.column_config.NumberColumn("市值", format="$ %.1f 億"),
-                    "收盤價": st.column_config.NumberColumn("收盤價", format="%.2f"),
+                    "產業別":     st.column_config.TextColumn("產業別"),
+                    "漲幅(%)":    st.column_config.NumberColumn("漲幅", format="%.2f %%"),
+                    "收盤價":     st.column_config.NumberColumn("收盤價", format="%.2f"),
+                    "成交量(張)": st.column_config.NumberColumn("成交量(張)", format="%d"),
+                    "成交值(億)": st.column_config.NumberColumn("成交值(億)", format="%.2f 億"),
+                    "5日均量(張)":st.column_config.NumberColumn("5日均量(張)", format="%d"),
+                    "量比":       st.column_config.NumberColumn("量比", format="%.2f x"),
+                    "30日高":     st.column_config.NumberColumn("30日高", format="%.2f"),
                 }
             )
         else:
