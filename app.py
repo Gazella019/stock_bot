@@ -40,75 +40,23 @@ except Exception as e:
 
 st.markdown("""
 <style>
-/* ===== Dark Theme ===== */
-.stApp { background-color: #0d1117; color: #c9d1d9;
-         font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
+/* config.toml 負責整體深色主題，這裡只補不足的部分 */
 
-/* Sidebar */
-[data-testid="stSidebar"] { background-color: #161b22 !important; border-right: 1px solid #30363d; }
-[data-testid="stSidebar"] p,
-[data-testid="stSidebar"] label,
-[data-testid="stSidebar"] span { color: #c9d1d9 !important; }
-
-/* Headers */
-h1 { color: #e6edf3 !important; font-size: 1.5rem !important; font-weight: 700 !important;
-     border-bottom: 1px solid #30363d; padding-bottom: 0.6rem; margin-bottom: 1rem !important; }
-h2 { color: #79c0ff !important; font-size: 1.1rem !important; font-weight: 600 !important; }
-h3 { color: #58a6ff !important; }
-
-/* Inputs */
-input[type="number"], input[type="text"], input[type="date"] {
-    background-color: #21262d !important; color: #c9d1d9 !important;
-    border: 1px solid #30363d !important; border-radius: 6px !important; }
-[data-baseweb="select"] > div { background-color: #21262d !important; border-color: #30363d !important; }
-
-/* Buttons */
-.stButton > button {
-    background-color: #21262d !important; color: #c9d1d9 !important;
-    border: 1px solid #30363d !important; border-radius: 6px !important; transition: all 0.15s; }
-.stButton > button:hover { background-color: #30363d !important; border-color: #58a6ff !important; }
-.stButton > button[kind="primary"] {
-    background-color: #1f6feb !important; color: #ffffff !important;
-    border: none !important; font-weight: 600 !important; }
-.stButton > button[kind="primary"]:hover { background-color: #388bfd !important; }
-.stDownloadButton > button {
-    background-color: #161b22 !important; color: #58a6ff !important;
-    border: 1px solid #30363d !important; border-radius: 6px !important; width: 100% !important; }
-.stDownloadButton > button:hover { border-color: #58a6ff !important; }
-
-/* Alert boxes */
-[data-testid="stAlert"][data-baseweb="notification"][kind="info"]  { background-color: #0d1f36 !important; color: #79c0ff !important; border-color: #1f6feb !important; }
-[data-testid="stAlert"][data-baseweb="notification"][kind="success"]{ background-color: #0f2a1a !important; color: #3fb950 !important; border-color: #238636 !important; }
-[data-testid="stAlert"][data-baseweb="notification"][kind="warning"]{ background-color: #2b1d0a !important; color: #d29922 !important; border-color: #9e6a03 !important; }
-
-/* Slider track */
-[data-testid="stSlider"] [data-baseweb="slider"] [data-testid="stTickBarMin"],
-[data-testid="stSlider"] [data-baseweb="slider"] [data-testid="stTickBarMax"] { color: #8b949e; }
-
-/* Progress bar */
-[data-testid="stProgressBar"] > div > div { background-color: #1f6feb; }
-
-/* Divider */
-hr { border-color: #30363d !important; }
-
-/* Block container */
+/* 版面間距 */
 .block-container { padding-top: 1.2rem; padding-bottom: 1rem; }
 
-/* Radio */
-.stRadio [data-testid="stMarkdownContainer"] p { color: #c9d1d9 !important; }
+/* 主要按鈕 */
+.stButton > button[kind="primary"] {
+    background-color: #1f6feb !important;
+    color: #ffffff !important;
+    font-weight: 600 !important;
+}
 
-/* Hide toolbar (Deploy button) */
-header[data-testid="stHeader"] { display: none !important; }
+/* 下載按鈕 */
+.stDownloadButton > button { width: 100% !important; }
 
-/* Styler HTML table overrides */
-[data-testid="stDataFrame"] table  { border-collapse: collapse !important; width: 100%; }
-[data-testid="stDataFrame"] th     { padding: 9px 14px !important; font-size: 12px !important;
-                                     font-weight: 600 !important; white-space: nowrap !important;
-                                     border-bottom: 2px solid #30363d !important; }
-[data-testid="stDataFrame"] td     { padding: 7px 14px !important; font-size: 13px !important;
-                                     border-bottom: 1px solid #21262d !important;
-                                     white-space: nowrap !important; }
-[data-testid="stDataFrame"] tr:hover td { background-color: #1c2128 !important; }
+/* 隱藏右上角工具列（Deploy 等按鈕），保留側欄開關 */
+[data-testid="stToolbar"] { visibility: hidden; }
 </style>
 """, unsafe_allow_html=True)
 
