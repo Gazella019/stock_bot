@@ -150,77 +150,82 @@ def generate_tv_list(df, code_col='代碼', market_col='市場'):
     tv_lines = [f"{row.get(market_col, 'TWSE')}:{row[code_col]}" for _, row in df.iterrows()]
     return ",".join(tv_lines)
 
-def _style_table(df):
-    """市場彩色徽章、代碼藍、漲跌幅紅綠、量比高亮。"""
+def _render_table(df, height=700):
+    """以自定義 HTML 表格渲染：市場徽章、代碼藍、漲跌幅紅綠、量比分層上色。"""
     change_col = next((c for c in df.columns if '漲幅' in c or '漲跌幅' in c), None)
 
-    def _badge(text, bg, color):
-        return (f'<span style="display:inline-block;background:{bg};color:{color};'
-                f'padding:2px 8px;border-radius:4px;font-size:11px;font-weight:700;'
-                f'letter-spacing:0.5px;line-height:1.6">{text}</span>')
-
-    fmt = {}
-
-    if '市場' in df.columns:
-        def _fmt_mkt(v):
-            if v == 'TWSE': return _badge('市', '#0d2a4a', '#58a6ff')
-            return _badge('櫃', '#3a2000', '#e3b341')
-        fmt['市場'] = _fmt_mkt
-
-    if change_col and change_col in df.columns:
-        def _fmt_chg(v):
+    def _cell(col, val):
+        if val is None or (isinstance(val, float) and pd.isna(val)):
+            return '-'
+        if col == '代碼':
+            return f'<span class="cd">{val}</span>'
+        if col == '市場':
+            if val == 'TWSE':
+                return '<span class="mkt-t">市</span>'
+            return '<span class="mkt-o">櫃</span>'
+        if col == change_col:
             try:
-                f = float(v)
-                c = '#3fb950' if f > 0 else '#f85149' if f < 0 else '#8b949e'
-                return f'<span style="color:{c};font-weight:600">{f:+.2f}%</span>'
+                f = float(val)
+                cls = 'up' if f > 0 else 'dn' if f < 0 else ''
+                return f'<span class="{cls}">{f:+.2f}%</span>'
             except Exception:
-                return '-'
-        fmt[change_col] = _fmt_chg
-
-    if '量比' in df.columns:
-        def _fmt_ratio(v):
+                return str(val)
+        if col == '量比':
             try:
-                f = float(v)
-                c = '#f85149' if f >= 5 else '#f0883e' if f >= 3 else '#e3b341' if f >= 1.5 else '#c9d1d9'
-                return f'<span style="color:{c};font-weight:600">{f:.1f}x</span>'
+                f = float(val)
+                cls = ('r-hot' if f >= 5 else 'r-warm' if f >= 3
+                       else 'r-ok' if f >= 1.5 else '')
+                return f'<span class="{cls}">{f:.1f}x</span>'
             except Exception:
-                return '-'
-        fmt['量比'] = _fmt_ratio
+                return str(val)
+        if col in ('成交量(張)', '5日均量(張)'):
+            try: return f'{int(float(val)):,}'
+            except Exception: return str(val)
+        if col in ('收盤價', '成交值(億)', '30日高'):
+            try: return f'{float(val):.2f}'
+            except Exception: return str(val)
+        if col == '排名':
+            try: return str(int(float(val)))
+            except Exception: return str(val)
+        return str(val)
 
-    num_fmt = {
-        '收盤價':     '{:.2f}',
-        '成交量(張)': '{:,.0f}',
-        '成交值(億)': '{:.2f}',
-        '5日均量(張)':'{:,.0f}',
-        '30日高':     '{:.2f}',
-        '排名':       '{:.0f}',
-    }
-    for col, f in num_fmt.items():
-        if col in df.columns and pd.api.types.is_numeric_dtype(df[col]):
-            fmt[col] = f
+    ths = ''.join(f'<th>{c}</th>' for c in df.columns)
+    rows = ''.join(
+        f'<tr>{"".join(f"<td>{_cell(c, row[c])}</td>" for c in df.columns)}</tr>'
+        for _, row in df.iterrows()
+    )
 
-    def _code_style(series):
-        if series.name == '代碼':
-            return ['color: #58a6ff; font-weight: 600'] * len(series)
-        return [''] * len(series)
-
-    return (df.style
-              .apply(_code_style, axis=0)
-              .format(fmt, na_rep='-', escape=None)
-              .set_table_styles([
-                  {'selector': 'th', 'props': [
-                      ('font-size', '12px'), ('font-weight', '600'),
-                      ('padding', '9px 14px'), ('border-bottom', '2px solid #30363d'),
-                      ('text-align', 'left'), ('white-space', 'nowrap'),
-                  ]},
-                  {'selector': 'td', 'props': [
-                      ('padding', '7px 14px'), ('font-size', '13px'),
-                      ('border-bottom', '1px solid #21262d'), ('white-space', 'nowrap'),
-                  ]},
-                  {'selector': 'tr:hover td', 'props': [
-                      ('background-color', '#1c2128 !important'),
-                  ]},
-              ]))
+    html = f"""
+<style>
+.sk-wrap {{max-height:{height}px;overflow:auto;border:1px solid #30363d;
+           border-radius:8px;margin-top:8px}}
+.sk-tbl  {{border-collapse:collapse;width:100%;
+           font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+           font-size:13px;color:#c9d1d9}}
+.sk-tbl th {{padding:9px 14px;font-size:12px;font-weight:600;color:#8b949e;
+             border-bottom:2px solid #30363d;text-align:left;white-space:nowrap;
+             position:sticky;top:0;background:#161b22;z-index:1}}
+.sk-tbl td {{padding:7px 14px;border-bottom:1px solid #21262d;white-space:nowrap}}
+.sk-tbl tr:hover td {{background:#1c2128}}
+.sk-tbl .cd     {{color:#58a6ff;font-weight:600}}
+.sk-tbl .mkt-t  {{display:inline-block;background:#0d2a4a;color:#58a6ff;
+                  padding:1px 7px;border-radius:4px;font-size:11px;font-weight:700}}
+.sk-tbl .mkt-o  {{display:inline-block;background:#3a2000;color:#e3b341;
+                  padding:1px 7px;border-radius:4px;font-size:11px;font-weight:700}}
+.sk-tbl .up     {{color:#3fb950;font-weight:600}}
+.sk-tbl .dn     {{color:#f85149;font-weight:600}}
+.sk-tbl .r-hot  {{color:#f85149;font-weight:600}}
+.sk-tbl .r-warm {{color:#f0883e;font-weight:600}}
+.sk-tbl .r-ok   {{color:#e3b341;font-weight:600}}
+</style>
+<div class="sk-wrap">
+<table class="sk-tbl">
+<thead><tr>{ths}</tr></thead>
+<tbody>{rows}</tbody>
+</table>
+</div>
+"""
+    st.markdown(html, unsafe_allow_html=True)
 
 # ==========================================
 # 4. 功能引擎 A: 成交值排行 Top 200
@@ -582,7 +587,7 @@ if run_btn:
             col1, col2 = st.columns(2)
             col1.download_button("📥 下載結果 CSV", csv, f"trading_value_{scan_label}.csv", "text/csv")
             col2.download_button("📊 匯出 TradingView 清單", tv_txt, f"trading_value_tv_{scan_label}.txt", "text/plain")
-            st.dataframe(_style_table(df_rank), width='stretch', hide_index=True, height=700)
+            _render_table(df_rank, height=700)
         else:
             st.warning("查無資料，請確認是已收盤的交易日。")
 
@@ -608,9 +613,6 @@ if run_btn:
             scan_date = target_date.strftime('%Y%m%d') if use_history else date.today().strftime('%Y%m%d')
             col1.download_button("📥 下載結果 CSV", csv, f"strategy_{scan_date}.csv", "text/csv")
             col2.download_button("📊 匯出 TradingView 清單", tv_txt, f"tradingview_{scan_date}.txt", "text/plain")
-            st.dataframe(
-                _style_table(df_strat.sort_values(by='漲幅(%)', ascending=False)),
-                width='stretch', hide_index=True,
-            )
+            _render_table(df_strat.sort_values(by='漲幅(%)', ascending=False))
         else:
             st.info("今日無符合「起漲條件」的股票。")
