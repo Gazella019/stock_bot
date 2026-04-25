@@ -96,6 +96,9 @@ hr { border-color: #30363d !important; }
 
 /* Radio */
 .stRadio [data-testid="stMarkdownContainer"] p { color: #c9d1d9 !important; }
+
+/* Hide toolbar (Deploy button) */
+header[data-testid="stHeader"] { display: none !important; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -138,7 +141,7 @@ def generate_tv_list(df, code_col='代碼', market_col='市場'):
     return ",".join(tv_lines)
 
 def _style_table(df):
-    """深色主題：代碼藍、市場上市/上櫃用色、漲跌幅紅綠。"""
+    """代碼藍、市場上市/上櫃用色、漲跌幅紅綠，並修正數字顯示格式。"""
     change_col = next((c for c in df.columns if '漲幅' in c or '漲跌幅' in c), None)
 
     def _col_style(series):
@@ -151,36 +154,32 @@ def _style_table(df):
                 out.append('color: #79c0ff; font-weight: 600' if val == 'TWSE'
                            else 'color: #e3b341; font-weight: 600')
             elif col == change_col:
-                if isinstance(val, (int, float)) and val > 0:
-                    out.append('color: #3fb950; font-weight: 600')
-                elif isinstance(val, (int, float)) and val < 0:
-                    out.append('color: #f85149; font-weight: 600')
-                else:
-                    out.append('color: #8b949e')
+                try:
+                    v = float(val)
+                    if v > 0:   out.append('color: #3fb950; font-weight: 600')
+                    elif v < 0: out.append('color: #f85149; font-weight: 600')
+                    else:       out.append('')
+                except (TypeError, ValueError):
+                    out.append('')
             else:
-                out.append('color: #c9d1d9')
+                out.append('')
         return out
 
-    return (df.style
-              .apply(_col_style, axis=0)
-              .set_table_styles([
-                  {'selector': 'th', 'props': [
-                      ('background-color', '#161b22'), ('color', '#8b949e'),
-                      ('font-size', '12px'), ('font-weight', '600'),
-                      ('padding', '8px 14px'), ('border-bottom', '2px solid #30363d'),
-                      ('text-align', 'left'), ('letter-spacing', '0.3px'),
-                  ]},
-                  {'selector': 'td', 'props': [
-                      ('padding', '7px 14px'), ('border-bottom', '1px solid #1c2128'),
-                      ('font-size', '13px'),
-                  ]},
-                  {'selector': 'tr:hover td', 'props': [
-                      ('background-color', '#1c2128'),
-                  ]},
-                  {'selector': '', 'props': [
-                      ('background-color', '#0d1117'), ('color', '#c9d1d9'),
-                  ]},
-              ]))
+    fmt_map = {
+        '收盤價':     '{:.2f}',
+        '漲幅(%)':    '{:+.2f}',
+        '漲跌幅(%)':  '{:+.2f}',
+        '成交量(張)': '{:,.0f}',
+        '成交值(億)': '{:.2f}',
+        '5日均量(張)':'{:,.0f}',
+        '量比':       '{:.2f}',
+        '30日高':     '{:.2f}',
+        '排名':       '{:.0f}',
+    }
+    fmt = {col: f for col, f in fmt_map.items()
+           if col in df.columns and pd.api.types.is_numeric_dtype(df[col])}
+
+    return df.style.apply(_col_style, axis=0).format(fmt, na_rep='-')
 
 # ==========================================
 # 4. 功能引擎 A: 成交值排行 Top 200
