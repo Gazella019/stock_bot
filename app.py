@@ -40,8 +40,62 @@ except Exception as e:
 
 st.markdown("""
 <style>
-    .block-container { padding-top: 1rem; }
-    .stDownloadButton button { width: 100%; }
+/* ===== Dark Theme ===== */
+.stApp { background-color: #0d1117; color: #c9d1d9;
+         font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
+
+/* Sidebar */
+[data-testid="stSidebar"] { background-color: #161b22 !important; border-right: 1px solid #30363d; }
+[data-testid="stSidebar"] p,
+[data-testid="stSidebar"] label,
+[data-testid="stSidebar"] span { color: #c9d1d9 !important; }
+
+/* Headers */
+h1 { color: #e6edf3 !important; font-size: 1.5rem !important; font-weight: 700 !important;
+     border-bottom: 1px solid #30363d; padding-bottom: 0.6rem; margin-bottom: 1rem !important; }
+h2 { color: #79c0ff !important; font-size: 1.1rem !important; font-weight: 600 !important; }
+h3 { color: #58a6ff !important; }
+
+/* Inputs */
+input[type="number"], input[type="text"], input[type="date"] {
+    background-color: #21262d !important; color: #c9d1d9 !important;
+    border: 1px solid #30363d !important; border-radius: 6px !important; }
+[data-baseweb="select"] > div { background-color: #21262d !important; border-color: #30363d !important; }
+
+/* Buttons */
+.stButton > button {
+    background-color: #21262d !important; color: #c9d1d9 !important;
+    border: 1px solid #30363d !important; border-radius: 6px !important; transition: all 0.15s; }
+.stButton > button:hover { background-color: #30363d !important; border-color: #58a6ff !important; }
+.stButton > button[kind="primary"] {
+    background-color: #1f6feb !important; color: #ffffff !important;
+    border: none !important; font-weight: 600 !important; }
+.stButton > button[kind="primary"]:hover { background-color: #388bfd !important; }
+.stDownloadButton > button {
+    background-color: #161b22 !important; color: #58a6ff !important;
+    border: 1px solid #30363d !important; border-radius: 6px !important; width: 100% !important; }
+.stDownloadButton > button:hover { border-color: #58a6ff !important; }
+
+/* Alert boxes */
+[data-testid="stAlert"][data-baseweb="notification"][kind="info"]  { background-color: #0d1f36 !important; color: #79c0ff !important; border-color: #1f6feb !important; }
+[data-testid="stAlert"][data-baseweb="notification"][kind="success"]{ background-color: #0f2a1a !important; color: #3fb950 !important; border-color: #238636 !important; }
+[data-testid="stAlert"][data-baseweb="notification"][kind="warning"]{ background-color: #2b1d0a !important; color: #d29922 !important; border-color: #9e6a03 !important; }
+
+/* Slider track */
+[data-testid="stSlider"] [data-baseweb="slider"] [data-testid="stTickBarMin"],
+[data-testid="stSlider"] [data-baseweb="slider"] [data-testid="stTickBarMax"] { color: #8b949e; }
+
+/* Progress bar */
+[data-testid="stProgressBar"] > div > div { background-color: #1f6feb; }
+
+/* Divider */
+hr { border-color: #30363d !important; }
+
+/* Block container */
+.block-container { padding-top: 1.2rem; padding-bottom: 1rem; }
+
+/* Radio */
+.stRadio [data-testid="stMarkdownContainer"] p { color: #c9d1d9 !important; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -82,6 +136,51 @@ def generate_tv_list(df, code_col='代碼', market_col='市場'):
     if df is None or df.empty: return ""
     tv_lines = [f"{row.get(market_col, 'TWSE')}:{row[code_col]}" for _, row in df.iterrows()]
     return ",".join(tv_lines)
+
+def _style_table(df):
+    """深色主題：代碼藍、市場上市/上櫃用色、漲跌幅紅綠。"""
+    change_col = next((c for c in df.columns if '漲幅' in c or '漲跌幅' in c), None)
+
+    def _col_style(series):
+        col = series.name
+        out = []
+        for val in series:
+            if col == '代碼':
+                out.append('color: #58a6ff; font-weight: 600')
+            elif col == '市場':
+                out.append('color: #79c0ff; font-weight: 600' if val == 'TWSE'
+                           else 'color: #e3b341; font-weight: 600')
+            elif col == change_col:
+                if isinstance(val, (int, float)) and val > 0:
+                    out.append('color: #3fb950; font-weight: 600')
+                elif isinstance(val, (int, float)) and val < 0:
+                    out.append('color: #f85149; font-weight: 600')
+                else:
+                    out.append('color: #8b949e')
+            else:
+                out.append('color: #c9d1d9')
+        return out
+
+    return (df.style
+              .apply(_col_style, axis=0)
+              .set_table_styles([
+                  {'selector': 'th', 'props': [
+                      ('background-color', '#161b22'), ('color', '#8b949e'),
+                      ('font-size', '12px'), ('font-weight', '600'),
+                      ('padding', '8px 14px'), ('border-bottom', '2px solid #30363d'),
+                      ('text-align', 'left'), ('letter-spacing', '0.3px'),
+                  ]},
+                  {'selector': 'td', 'props': [
+                      ('padding', '7px 14px'), ('border-bottom', '1px solid #1c2128'),
+                      ('font-size', '13px'),
+                  ]},
+                  {'selector': 'tr:hover td', 'props': [
+                      ('background-color', '#1c2128'),
+                  ]},
+                  {'selector': '', 'props': [
+                      ('background-color', '#0d1117'), ('color', '#c9d1d9'),
+                  ]},
+              ]))
 
 # ==========================================
 # 4. 功能引擎 A: 成交值排行 Top 200
@@ -201,13 +300,11 @@ def run_strategy_scanner(api, vol_mul, rise_threshold, capital_map, top_n_tv=0):
 
                 vol_ok = (vol_mul == 0) or (cur_vol > vol_ma5 * vol_mul)
                 if cur_close >= highest * 0.95 and vol_ok:
-                    shares = capital_map.get(code, 0)
-                    m_cap = cur_close * shares if shares else None
                     final_res.append({
                         '代碼': code, '名稱': contract.name, '市場': market_map.get(code, "TWSE"),
                         '漲幅(%)': snap.change_rate, '收盤價': cur_close,
                         '成交量(張)': int(snap.total_volume), '5日均量(張)': int(vol_ma5),
-                        '總市值(億)': round(m_cap, 1) if m_cap else None
+                        '成交值(億)': round(getattr(snap, 'total_amount', 0) / 1e8, 2),
                     })
         except: pass
         progress_bar.progress(0.5 + (0.5 * (idx + 1) / len(candidates)))
@@ -445,18 +542,7 @@ if run_btn:
             col1, col2 = st.columns(2)
             col1.download_button("📥 下載結果 CSV", csv, f"trading_value_{scan_label}.csv", "text/csv")
             col2.download_button("📊 匯出 TradingView 清單", tv_txt, f"trading_value_tv_{scan_label}.txt", "text/plain")
-            col_cfg = {
-                "排名":       st.column_config.NumberColumn("排名", format="%d"),
-                "代碼":       st.column_config.TextColumn("代碼"),
-                "名稱":       st.column_config.TextColumn("名稱"),
-                "市場":       st.column_config.TextColumn("市場"),
-                "產業別":     st.column_config.TextColumn("產業別"),
-                "成交值(億)": st.column_config.NumberColumn("成交值 (億)", format="%.2f 億"),
-                "收盤價":     st.column_config.NumberColumn("收盤價", format="%.2f"),
-                "漲幅(%)":    st.column_config.NumberColumn("漲跌幅", format="%.2f %%"),
-                "成交量(張)": st.column_config.NumberColumn("成交量 (張)", format="%d"),
-            }
-            st.dataframe(df_rank, width=1200, hide_index=True, height=700, column_config=col_cfg)
+            st.dataframe(_style_table(df_rank), use_container_width=True, hide_index=True, height=700)
         else:
             st.warning("查無資料，請確認是已收盤的交易日。")
 
@@ -483,18 +569,8 @@ if run_btn:
             col1.download_button("📥 下載結果 CSV", csv, f"strategy_{scan_date}.csv", "text/csv")
             col2.download_button("📊 匯出 TradingView 清單", tv_txt, f"tradingview_{scan_date}.txt", "text/plain")
             st.dataframe(
-                df_strat.sort_values(by='漲幅(%)', ascending=False),
-                width=1200, hide_index=True,
-                column_config={
-                    "產業別":     st.column_config.TextColumn("產業別"),
-                    "漲幅(%)":    st.column_config.NumberColumn("漲幅", format="%.2f %%"),
-                    "收盤價":     st.column_config.NumberColumn("收盤價", format="%.2f"),
-                    "成交量(張)": st.column_config.NumberColumn("成交量(張)", format="%d"),
-                    "成交值(億)": st.column_config.NumberColumn("成交值(億)", format="%.2f 億"),
-                    "5日均量(張)":st.column_config.NumberColumn("5日均量(張)", format="%d"),
-                    "量比":       st.column_config.NumberColumn("量比", format="%.2f x"),
-                    "30日高":     st.column_config.NumberColumn("30日高", format="%.2f"),
-                }
+                _style_table(df_strat.sort_values(by='漲幅(%)', ascending=False)),
+                use_container_width=True, hide_index=True,
             )
         else:
             st.info("今日無符合「起漲條件」的股票。")
