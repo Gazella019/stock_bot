@@ -18,7 +18,12 @@ CA_PASSWORD = "O100435356"
 # ==========================================
 # 2. 頁面初始化
 # ==========================================
-st.set_page_config(layout="wide", page_title="台股萬能工具箱", page_icon="📈")
+st.set_page_config(
+    layout="wide",
+    page_title="台股萬能工具箱",
+    page_icon="📈",
+    initial_sidebar_state="expanded",
+)
 
 # 嘗試匯入 twstock (計算市值必須)
 try:
