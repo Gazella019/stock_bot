@@ -1,22 +1,11 @@
 import streamlit as st
-import shioaji as sj
 import pandas as pd
 from datetime import datetime, timedelta, date
-import time
 import requests
 import yfinance as yf
 
 # ==========================================
-# 1. 設定與憑證區 (已填入您的資料)
-# ==========================================
-API_KEY = "GQdPttVc23aRTA3nERkCLMEfnEsDZ6Q6scYTTXkp1YaW"
-SECRET_KEY = "CF2dxzYP56htFxJJAadfUecyBQgVMnR8Pk35ykohwqvG"
-PERSON_ID = "O100435356"
-CA_PATH = "Sinopac.pfx"
-CA_PASSWORD = "O100435356"
-
-# ==========================================
-# 2. 頁面初始化
+# 1. 頁面初始化
 # ==========================================
 st.set_page_config(
     layout="wide",
@@ -25,77 +14,23 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# 嘗試匯入 twstock (計算市值必須)
-try:
-    import twstock
-    HAS_TWSTOCK = True
-except ImportError:
-    HAS_TWSTOCK = False
-    st.error("請安裝 twstock 套件以進行市值計算 (pip install twstock)")
-
-# 嘗試匯入 finlab (歷史回測用)
-_finlab_error = None
-try:
-    import finlab
-    from finlab import data as finlab_data
-    HAS_FINLAB = True
-except Exception as e:
-    HAS_FINLAB = False
-    _finlab_error = str(e)
-
 st.markdown("""
 <style>
-/* 版面間距 */
 .block-container { padding-top: 1.2rem; padding-bottom: 1rem; }
-
-/* 主要按鈕 */
 .stButton > button[kind="primary"] {
     background-color: #1f6feb !important;
     color: #ffffff !important;
     font-weight: 600 !important;
 }
-
-/* 下載按鈕 */
 .stDownloadButton > button { width: 100% !important; }
-
-/* 隱藏右上角 Deploy / 漢堡選單，不影響側欄開關 */
 #MainMenu { visibility: hidden; }
 footer    { visibility: hidden; }
 </style>
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 3. 輔助函式與 API 初始化
+# 2. 輔助函式
 # ==========================================
-
-@st.cache_resource
-def get_shioaji_api():
-    """初始化 Shioaji API"""
-    api = sj.Shioaji()
-    try:
-        api.login(api_key=API_KEY, secret_key=SECRET_KEY)
-        api.activate_ca(ca_path=CA_PATH, ca_passwd=CA_PASSWORD, person_id=PERSON_ID)
-        time.sleep(1.0)
-        return api
-    except Exception as e:
-        st.error(f"Shioaji 登入失敗: {e}")
-        return None
-
-@st.cache_resource
-def get_stock_capital_map():
-    """
-    快取 twstock 股本資料
-    Return: Dict { '2330': 股本(億元), ... }
-    """
-    if not HAS_TWSTOCK: return {}
-    capital_map = {}
-    try:
-        for code, info in twstock.codes.items():
-            if info.type == "股票" and info.capital:
-                issued_shares_b = (info.capital / 10) / 100000000
-                capital_map[code] = issued_shares_b
-    except: pass
-    return capital_map
 
 def generate_tv_list(df, code_col='代碼', market_col='市場'):
     if df is None or df.empty: return ""
@@ -180,7 +115,7 @@ def _render_table(df, height=700):
     st.markdown(html, unsafe_allow_html=True)
 
 # ==========================================
-# 4. 功能引擎 A: 成交值排行 Top 200
+# 3. 功能引擎 A: 成交值排行 Top 200
 # ==========================================
 
 def get_top_200_trading_value_history(target_date):
@@ -216,102 +151,7 @@ def get_top_200_trading_value_history(target_date):
     return df
 
 # ==========================================
-# 5. 功能引擎 B: 策略篩選 即時版 (Shioaji)
-# ==========================================
-
-def run_strategy_scanner(api, vol_mul, rise_threshold, capital_map, top_n_tv=0):
-    status_text = st.empty()
-    progress_bar = st.progress(0)
-    status_text.text("📥 [策略模式] 下載全市場清單...")
-
-    contracts = []
-    market_map = {}
-    code_to_contract = {}
-    for c in api.Contracts.Stocks.TSE:
-        if len(c.code) == 4:
-            contracts.append(c)
-            market_map[c.code] = "TWSE"
-            code_to_contract[c.code] = c
-    for c in api.Contracts.Stocks.OTC:
-        if len(c.code) == 4:
-            contracts.append(c)
-            market_map[c.code] = "TPEx"
-            code_to_contract[c.code] = c
-
-    chunk_size = 200
-    total_chunks = (len(contracts) // chunk_size) + 1
-
-    # Step 1: 蒐集全市場 snapshots
-    status_text.text(f"🚀 [策略模式] 第一階段快篩（{len(contracts)} 檔）...")
-    all_snaps = {}
-    for idx, i in enumerate(range(0, len(contracts), chunk_size)):
-        batch = contracts[i : i + chunk_size]
-        try:
-            time.sleep(0.1)
-            snaps = api.snapshots(batch)
-            for s in snaps:
-                all_snaps[s.code] = s
-        except: pass
-        progress_bar.progress(min((idx + 1) / total_chunks * 0.5, 0.5))
-
-    # 成交值前 N 大篩選
-    if top_n_tv > 0:
-        sorted_codes = sorted(all_snaps, key=lambda c: getattr(all_snaps[c], 'total_amount', 0), reverse=True)
-        top_codes = set(sorted_codes[:top_n_tv])
-    else:
-        top_codes = None
-
-    candidates = []
-    for code, s in all_snaps.items():
-        if top_codes is not None and code not in top_codes:
-            continue
-        if getattr(s, 'total_volume', 0) > 500 and getattr(s, 'change_rate', 0.0) >= rise_threshold:
-            candidates.append((code, s))
-
-    if not candidates:
-        progress_bar.empty(); status_text.empty()
-        return pd.DataFrame()
-
-    # Step 2: kbars 技術確認
-    status_text.text(f"🔍 [策略模式] 第二階段分析 {len(candidates)} 檔候選股...")
-    final_res = []
-    start_date = (datetime.now() - timedelta(days=45)).strftime('%Y-%m-%d')
-    end_date = datetime.now().strftime('%Y-%m-%d')
-
-    for idx, (code, snap) in enumerate(candidates):
-        try:
-            time.sleep(0.08)
-            contract = code_to_contract.get(code)
-            if contract is None: continue
-
-            kbars = api.kbars(contract, start=start_date, end=end_date)
-            df = pd.DataFrame({**kbars})
-
-            if len(df) >= 10:
-                df['Close'] = df['Close'].astype(float)
-                df['Volume'] = df['Volume'].astype(float)
-                highest = df['Close'].tail(30).max()
-                cur_close = df['Close'].iloc[-1]
-                cur_vol = df['Volume'].iloc[-1]
-                vol_ma5 = df['Volume'].tail(5).mean() or 1
-
-                vol_ok = (vol_mul == 0) or (cur_vol > vol_ma5 * vol_mul)
-                if cur_close >= highest * 0.95 and vol_ok:
-                    final_res.append({
-                        '代碼': code, '名稱': contract.name, '市場': market_map.get(code, "TWSE"),
-                        '漲幅(%)': snap.change_rate, '收盤價': cur_close,
-                        '成交量(張)': int(snap.total_volume), '5日均量(張)': int(vol_ma5),
-                        '成交值(億)': round(getattr(snap, 'total_amount', 0) / 1e8, 2),
-                    })
-        except: pass
-        progress_bar.progress(0.5 + (0.5 * (idx + 1) / len(candidates)))
-
-    progress_bar.empty()
-    status_text.empty()
-    return pd.DataFrame(final_res)
-
-# ==========================================
-# 6. 功能引擎 C: 歷史回測 (TWSE API + yfinance)
+# 4. 功能引擎 B: 策略篩選 歷史版 (TWSE API + yfinance)
 # ==========================================
 
 @st.cache_data(ttl=86400)
@@ -327,7 +167,7 @@ def _fetch_industry_map():
             df = df.iloc[1:].reset_index(drop=True)
             for _, row in df.iterrows():
                 raw = str(row.get('有價證券代號及名稱', ''))
-                parts = raw.split('\u3000')  # 全形空格分隔代號與名稱
+                parts = raw.split('　')
                 if len(parts) >= 1 and len(parts[0].strip()) == 4:
                     result[parts[0].strip()] = str(row.get('產業別', ''))
         except Exception:
@@ -348,11 +188,11 @@ def _fetch_twse_day(target_date):
         if len(code) != 4: continue
         try:
             close       = float(r[7].replace(',', ''))
-            change_amt  = float(r[8].replace(',', '').strip())  # 已含正負號
+            change_amt  = float(r[8].replace(',', '').strip())
             prev_close  = close - change_amt
             change_rate = (change_amt / prev_close * 100) if prev_close > 0 else 0
-            vol_lots    = int(r[2].replace(',', '')) / 1000  # 股 → 張
-            turnover    = float(r[3].replace(',', '')) / 1e8  # 元 → 億
+            vol_lots    = int(r[2].replace(',', '')) / 1000
+            turnover    = float(r[3].replace(',', '')) / 1e8
             rows.append({'代碼': code, '名稱': r[1].strip(), '市場': 'TWSE',
                          '收盤價': close, '漲幅(%)': round(change_rate, 2),
                          '成交量(張)': vol_lots, '成交值(億)': round(turnover, 2)})
@@ -377,11 +217,11 @@ def _fetch_tpex_day(target_date):
         try:
             close       = float(r[2].replace(',', ''))
             change_str  = r[3].strip().replace('+', '')
-            change_amt  = float(change_str)              # 已含負號
+            change_amt  = float(change_str)
             prev_close  = close - change_amt
             change_rate = (change_amt / prev_close * 100) if prev_close > 0 else 0
-            vol_lots    = int(r[7].replace(',', '')) / 1000  # 股 → 張
-            turnover    = float(r[8].replace(',', '')) / 1e8  # 元 → 億
+            vol_lots    = int(r[7].replace(',', '')) / 1000
+            turnover    = float(r[8].replace(',', '')) / 1e8
             rows.append({'代碼': code, '名稱': r[1].strip(), '市場': 'TPEx',
                          '收盤價': close, '漲幅(%)': round(change_rate, 2),
                          '成交量(張)': vol_lots, '成交值(億)': round(turnover, 2)})
@@ -392,7 +232,6 @@ def run_history_scanner(target_date, vol_mul, rise_threshold, top_n_tv=0):
     status_text = st.empty()
     progress_bar = st.progress(0)
 
-    # ── 第一階段：TWSE + TPEx 官方 API（2 個 request 取全市場）──
     status_text.text(f"📥 從 TWSE/TPEx 取得 {target_date} 全市場資料...")
     try:
         tse_df  = _fetch_twse_day(target_date)
@@ -410,7 +249,6 @@ def run_history_scanner(target_date, vol_mul, rise_threshold, top_n_tv=0):
 
     progress_bar.progress(0.25)
 
-    # 成交值前 N 大篩選
     if top_n_tv > 0:
         top_codes = set(day_df.sort_values('成交值(億)', ascending=False).head(top_n_tv)['代碼'])
         universe = day_df[day_df['代碼'].isin(top_codes)]
@@ -423,7 +261,6 @@ def run_history_scanner(target_date, vol_mul, rise_threshold, top_n_tv=0):
         progress_bar.empty(); status_text.empty()
         return pd.DataFrame()
 
-    # ── 第二階段：yfinance 拿 60 天歷史，確認 30 日高 + 5 日均量 ──
     tickers = [f"{r['代碼']}.TW" if r['市場'] == 'TWSE' else f"{r['代碼']}.TWO"
                for _, r in cands.iterrows()]
     code_map = {f"{r['代碼']}.TW" if r['市場'] == 'TWSE' else f"{r['代碼']}.TWO": r['代碼']
@@ -487,7 +324,7 @@ def run_history_scanner(target_date, vol_mul, rise_threshold, top_n_tv=0):
     return result_df
 
 # ==========================================
-# 7. 主程式 UI 邏輯
+# 5. 主程式 UI 邏輯
 # ==========================================
 
 with st.sidebar:
@@ -506,12 +343,9 @@ with st.sidebar:
         rise_threshold = st.slider("漲幅門檻 (%)", 0.0, 10.0, 3.0)
         vol_mul = st.number_input("爆量倍數 (vs 5日均量，0 = 不限)", min_value=0.0, value=1.5, step=0.1)
         top_n_tv = st.number_input("成交值前N大 (0 = 不限)", min_value=0, max_value=2000, value=0, step=50)
-
         st.divider()
-        use_history = st.toggle("📅 查詢歷史日期", value=False)
-        if use_history:
-            target_date = st.date_input("查詢日期", value=date.today(),
-                                        max_value=date.today())
+        target_date = st.date_input("查詢日期", value=date.today(), max_value=date.today())
+        st.info("ℹ️ 使用 TWSE/TPEx 收盤資料，請選擇已收盤的交易日。")
     else:
         target_date_tv = st.date_input("查詢日期", value=date.today(),
                                        max_value=date.today(), key="tv_date")
@@ -544,14 +378,8 @@ if run_btn:
             st.warning("查無資料，請確認是已收盤的交易日。")
 
     elif mode == "🚀 策略篩選 (起漲)":
-        if use_history:
-            st.info(f"📅 歷史模式：{target_date.strftime('%Y/%m/%d')}（TWSE + yfinance）")
-            df_strat = run_history_scanner(target_date, vol_mul, rise_threshold, top_n_tv)
-        else:
-            api = get_shioaji_api()
-            capital_map = get_stock_capital_map()
-            if not api: st.stop()
-            df_strat = run_strategy_scanner(api, vol_mul, rise_threshold, capital_map, top_n_tv)
+        st.info(f"📅 {target_date.strftime('%Y/%m/%d')}（TWSE + TPEx + yfinance）")
+        df_strat = run_history_scanner(target_date, vol_mul, rise_threshold, top_n_tv)
 
         if not df_strat.empty:
             st.success(f"🎯 篩選出 {len(df_strat)} 檔符合條件股票")
@@ -562,9 +390,9 @@ if run_btn:
                 tv_lines.append(f"{exchange}:{r['代碼']}")
             tv_txt = '\n'.join(tv_lines).encode('utf-8')
             col1, col2 = st.columns(2)
-            scan_date = target_date.strftime('%Y%m%d') if use_history else date.today().strftime('%Y%m%d')
-            col1.download_button("📥 下載結果 CSV", csv, f"strategy_{scan_date}.csv", "text/csv")
-            col2.download_button("📊 匯出 TradingView 清單", tv_txt, f"tradingview_{scan_date}.txt", "text/plain")
+            scan_label = target_date.strftime('%Y%m%d')
+            col1.download_button("📥 下載結果 CSV", csv, f"strategy_{scan_label}.csv", "text/csv")
+            col2.download_button("📊 匯出 TradingView 清單", tv_txt, f"tradingview_{scan_label}.txt", "text/plain")
             _render_table(df_strat.sort_values(by='漲幅(%)', ascending=False))
         else:
-            st.info("今日無符合「起漲條件」的股票。")
+            st.info("無符合「起漲條件」的股票。")
