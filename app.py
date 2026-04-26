@@ -2,7 +2,10 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime, timedelta, date
 import requests
+import urllib3
 import yfinance as yf
+
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # ==========================================
 # 1. 頁面初始化
@@ -160,7 +163,7 @@ def _fetch_industry_map():
     result = {}
     for mode in ('2', '4'):  # 2=上市, 4=上櫃
         try:
-            r = requests.get(f"https://isin.twse.com.tw/isin/C_public.jsp?strMode={mode}", timeout=15)
+            r = requests.get(f"https://isin.twse.com.tw/isin/C_public.jsp?strMode={mode}", timeout=15, verify=False)
             from io import StringIO
             df = pd.read_html(StringIO(r.text))[0]
             df.columns = df.iloc[0]
@@ -178,7 +181,7 @@ def _fetch_twse_day(target_date):
     """TWSE 全市場當日資料（上市）"""
     date_str = target_date.strftime('%Y%m%d')
     url = f"https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY_ALL?date={date_str}&response=json"
-    j = requests.get(url, timeout=15).json()
+    j = requests.get(url, timeout=15, verify=False).json()
     if j.get('stat') != 'OK' or not j.get('data'):
         return pd.DataFrame()
 
@@ -205,7 +208,7 @@ def _fetch_tpex_day(target_date):
     roc_date  = f"{roc_year}/{target_date.month:02d}/{target_date.day:02d}"
     url = (f"https://www.tpex.org.tw/web/stock/aftertrading/otc_quotes_no1430/"
            f"stk_wn1430_result.php?l=zh-tw&d={roc_date}&se=EW&s=0,asc,0")
-    j = requests.get(url, timeout=15).json()
+    j = requests.get(url, timeout=15, verify=False).json()
     raw = j.get('tables', [{}])[0].get('data') or j.get('aaData', [])
     if not raw:
         return pd.DataFrame()
