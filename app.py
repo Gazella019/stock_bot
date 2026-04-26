@@ -344,8 +344,8 @@ with st.sidebar:
     if mode == "🚀 策略篩選 (起漲)":
         st.header("⚙️ 篩選參數")
         rise_threshold = st.slider("漲幅門檻 (%)", 0.0, 10.0, 3.0)
-        vol_mul = st.number_input("爆量倍數 (vs 5日均量，0 = 不限)", min_value=0.0, value=1.5, step=0.1)
-        top_n_tv = st.number_input("成交值前N大 (0 = 不限)", min_value=0, max_value=2000, value=0, step=50)
+        vol_mul = st.number_input("爆量倍數 (vs 5日均量，0 = 不限)", min_value=0.0, value=0.0, step=0.1)
+        top_n_tv = st.number_input("成交值前N大 (0 = 不限)", min_value=0, max_value=2000, value=200, step=50)
         st.divider()
         target_date = st.date_input("查詢日期", value=date.today(), max_value=date.today())
         st.info("ℹ️ 使用 TWSE/TPEx 收盤資料，請選擇已收盤的交易日。")
