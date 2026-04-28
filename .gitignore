@@ -12,3 +12,10 @@ __pycache__/
 
 # Mac
 .DS_Store
+
+# 本機測試用腳本（不推上 GitHub）
+test*.py
+test*.c
+*_backtest.py
+scanner_bot.py
+*.html
